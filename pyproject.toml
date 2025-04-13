@@ -1,0 +1,16 @@
+[project]
+name = "closive"
+version = "0.0.0dev8"
+description = "A simple, composable, declarative DSL for control flow management."
+readme = "README.md"
+authors = [
+    { name = "kosmolebryce", email = "k.lebryce@pm.me" }
+]
+requires-python = ">=3.11.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+optional = []
