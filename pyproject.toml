@@ -1,6 +1,6 @@
 [project]
 name = "closive"
-version = "0.0.0dev8"
+version = "0.0.0dev9"
 description = "A simple, composable, declarative DSL for control flow management."
 readme = "README.md"
 authors = [
