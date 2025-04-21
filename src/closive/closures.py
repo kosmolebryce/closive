@@ -65,6 +65,13 @@ class _Closure:
             return result
         return wrapped
 
+    def __rshift__(self, other):
+        if not callable(other):
+            raise TypeError("Can only chain callables with >>")
+        new = _Closure(self._callbacks[0])
+        new._callbacks = self._callbacks + [other]
+        return new
+
     def pipe(self, fn) -> "_Closure":
         """Add a callback to the pipeline.
 
