@@ -1,8 +1,10 @@
-"""Initialization
+"""Closive Initialization
 
-Exposes the public API for Closive, a domain-specific language
-designed for use in callback-heavy data flows.
+This module exposes the public API for Closive, 
+a first-class solution for callback-heavy control flows.
 """
-from .closures import closure # API for the closure framework
+
+# Expose only the clean factory function
+from .closures import closure
 
 __all__ = ["closure"]
