@@ -1,6 +1,6 @@
 [project]
 name = "closive"
-version = "0.0.0dev18"
+version = "0.0.0dev19"
 description = "Abstractions for callback-heavy control flows."
 readme = "README.md"
 authors = [
@@ -15,5 +15,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 optional = [
+    "ipython>=9.2.0",
+    "numpy>=2.2.5",
     "pyyaml>=6.0.2",
 ]

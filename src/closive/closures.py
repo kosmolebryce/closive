@@ -5,8 +5,10 @@ Abstractions for callback-heavy control flows with explicit state management.
 
 from copy import copy
 from collections.abc import Callable
-from functools import wraps
-from typing import Optional, Union, Any, List, Dict, Generator, Tuple
+from functools import wraps, reduce
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
+
+from .results import Result
 
 
 class PipelineState:
@@ -73,68 +75,45 @@ class _Closure:
             'description': fn.__doc__ or "No description"
         }]
         
+    
     def __call__(self, target):
-        """
-        Makes the _Closure class callable as a decorator.
-        """
         @wraps(target)
         def wrapped(*args, **kwargs):
-            # Initialize the pipeline state with the result of the target function
-            result = target(*args, **kwargs)
-            state = PipelineState(result)
-            
-            if self._debug:
-                print(f"[closure] Initial result from {target.__name__}: {result!r}")
-            
-            # Execute each callback in the pipeline
-            for idx, (fn, metadata) in enumerate(zip(self._callbacks, self._callback_metadata)):
-                # Create a context for this step's execution
-                step_context = {
-                    'step_index': idx,
-                    'original_args': args,
-                    'original_kwargs': kwargs,
-                    'history': state.get_history()
-                }
-                
-                # Execute the callback
-                try:
-                    # Pass both the current state value and the original inputs
-                    result = fn(state.current, *args, **kwargs)
-                    
-                    # Update the state with the new result
-                    state.update(
-                        value=result, 
-                        step_name=metadata['name'],
-                        step_index=idx,
-                        success=True
-                    )
-                    
-                    if self._debug:
-                        print(f"[closure] After step {idx+1} ({metadata['name']}): {result!r}")
-                        
-                except Exception as e:
-                    if self._debug:
-                        print(f"[closure] Error in step {idx+1} ({metadata['name']}): {str(e)}")
-                    
-                    # Record the error in state
-                    state.update(
-                        value=state.current,  # Keep previous value
-                        step_name=metadata['name'],
-                        step_index=idx,
-                        success=False,
-                        error=str(e),
-                        error_type=type(e).__name__
-                    )
-                    
-                    # Reraise the exception
-                    raise
-            
-            return state.current
-        
-        # Add ability to access the pipeline state for debugging/introspection
+            # 1) Lift initial call
+            try:
+                initial = target(*args, **kwargs)
+                result = Result.Ok(initial)
+            except Exception as e:
+                result = Result.Err(e)
+
+            # 2) Run through callbacks
+            for fn, meta in zip(self._callbacks, self._callback_metadata):
+                result = result.bind(lambda v, fn=fn: self._apply_step(fn, v, *args, **kwargs))
+                if not result.ok:
+                    break
+
+            # 3a) If the user asked for a default, recover here
+            if not result.ok and hasattr(self, "_default_on_error"):
+                result = result.recover(lambda _: self._default_on_error)
+
+            # 3b) Unwrap or raise
+            if result.ok:
+                return result.value
+            else:
+                raise result.value
+
         wrapped._closure = self
-        
         return wrapped
+
+
+    def unsafe(self) -> "_Closure":
+        """
+        Return a version of this closure that skips the monadic wrapping
+        and runs in the original imperative "fail-fast" mode.
+        """
+        new = copy(self)
+        new._use_monad = False
+        return new
 
     def __rshift__(self, other: Union['_Closure', Callable]) -> '_Closure':
         """
@@ -248,50 +227,28 @@ class _Closure:
             
         return new
     
-    def trace(self, input_value: Any, *args, **kwargs) -> Generator[Dict, None, None]:
-        """
-        Execute the pipeline on the given input and yield each intermediate result.
-        
-        This provides a way to introspect pipeline execution without decorating a function.
-        """
-        state = PipelineState(input_value)
-        
-        # Initial state
-        yield {
-            'step': 'input',
-            'value': input_value,
-            'index': -1
-        }
-        
-        # Execute each callback in the pipeline
-        for idx, (fn, metadata) in enumerate(zip(self._callbacks, self._callback_metadata)):
-            try:
-                result = fn(state.current, *args, **kwargs)
-                
-                state.update(
-                    value=result, 
-                    step_name=metadata['name'],
-                    step_index=idx,
-                    success=True
-                )
-                
-                yield {
-                    'step': metadata['name'],
-                    'value': result,
-                    'index': idx,
-                    'success': True
-                }
-                
-            except Exception as e:
-                yield {
-                    'step': metadata['name'],
-                    'error': str(e),
-                    'error_type': type(e).__name__,
-                    'index': idx,
-                    'success': False
-                }
+    def trace(self, input_value, *args, **kwargs):
+        result = Result.Ok(input_value)
+        for idx, (fn, meta) in enumerate(zip(self._callbacks, self._callback_metadata)):
+            result = result.bind(lambda v: _apply_step(fn, v, *args, **kwargs))
+            yield {
+                "index": idx,
+                "step": meta["name"],
+                "success": result.ok,
+                **({"value": result.value} if result.ok else {"error": result.value})
+            }
+            if not result.ok:
                 break
-    
+   
+
+    @staticmethod
+    def _apply_step(fn, v, *a, **kw):
+        try:
+            return Result.Ok(fn(v, *a, **kw))
+        except Exception as e:
+            return Result.Err(e)
+
+
     def visualize(self) -> str:
         """
         Generate a text representation of the pipeline.
@@ -398,6 +355,51 @@ class _Closure:
         root_fn.__doc__ = f"Calculate the {n}th root of the input value"
         return self.pipe(root_fn)
 
+
+    def map(self, fn: Callable[[Any], Any], *,
+                    name: str = None, description: str = None) -> "_Closure":
+        """
+        Apply `fn` to each element of the current value (which must be iterable).
+        """
+        def mapper(coll, *args, **kwargs):
+            try:
+                return [fn(x) for x in coll]
+            except TypeError:
+                raise TypeError(f"map expects an iterable, got {type(coll).__name__}")
+        mapper.__name__ = name or f"map({fn.__name__})"
+        mapper.__doc__ = description or f"Map {fn.__name__} over iterable"
+        return self.pipe(mapper)
+
+    def filter(self, predicate: Callable[[Any], bool], *,
+                        name: str = None, description: str = None) -> "_Closure":
+        """
+        Keep only those elements `x` for which `predicate(x)` is truthy.
+        """
+        def fil(coll, *args, **kwargs):
+            try:
+                return [x for x in coll if predicate(x)]
+            except TypeError:
+                raise TypeError(f"filter expects an iterable, got {type(coll).__name__}")
+        fil.__name__ = name or f"filter({predicate.__name__})"
+        fil.__doc__ = description or f"Filter iterable by {predicate.__name__}"
+        return self.pipe(fil)
+
+    def fold(self, fn: Callable[[Any, Any], Any], initial: Any, *,
+                    name: str = None, description: str = None) -> "_Closure":
+        """
+        Reduce the current iterable by applying `fn(acc, x)` across all elements, 
+        starting from `initial`.
+        """
+        def fld(coll, *args, **kwargs):
+            try:
+                return reduce(fn, coll, initial)
+            except TypeError:
+                raise TypeError(f"fold expects an iterable, got {type(coll).__name__}")
+        fld.__name__ = name or f"fold({fn.__name__}, init={initial!r})"
+        fld.__doc__ = description or f"Fold iterable with {fn.__name__}, init={initial!r}"
+        return self.pipe(fld)
+
+
     # Iterator for pipeline introspection
     def __iter__(self) -> Generator[Tuple[int, Callable, Dict], None, None]:
         """
@@ -426,6 +428,22 @@ class _Closure:
             'success': success,
             'step_count': len(results) - 1  # Don't count input
         }
+
+    def recover(self, handler: Callable[[Any], Any],
+                        *, name=None, description=None) -> "_Closure":
+        def inner(v, *a, **kw):
+            # `v` here is *always* a Result[T,E]
+            return v.recover(handler)
+        inner.__name__ = name or "recover"
+        inner.__doc__ = description or "Recover from an error via handler"
+        return self.pipe(inner)
+
+    def unwrap_or(self, default, *, name=None, description=None):
+        def inner(v, *a, **kw):
+            return v.unwrap_or(default)
+        inner.__name__ = name or f"unwrap_or({default!r})"
+        inner.__doc__ = description or "Provide a default on error"
+        return self.pipe(inner)
 
     def get_step_result(self, input_value: Any, step_idx: int, *args, **kwargs) -> Any:
         """
@@ -468,6 +486,13 @@ class _Closure:
             result._callback_metadata.append(meta)
             
         return result
+    
+    
+    def __or__(self, default_value):
+        new = copy(self)
+        new._default_on_error = default_value
+        return new
+
 
     # Aliases for a more expressive API
     do = next = then = pipe
