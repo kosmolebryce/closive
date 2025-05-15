@@ -1,6 +1,6 @@
 [project]
 name = "closive"
-version = "0.0.0dev20"
+version = "0.0.0dev21"
 description = "Abstractions for callback-heavy control flows."
 readme = "README.md"
 authors = [
