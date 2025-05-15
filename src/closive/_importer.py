@@ -14,7 +14,7 @@ from typing import Dict, Any
 def display_welcome_message():
     """Display a welcome message when closive is imported."""
     print("\033[1;36m" + "Closive: Data Transformatics - v0.0.0" + "\033[0m")
-    print("💡 Tip: Use closure(fn) >> next_fn to create transformation pipelines.")
+    print("💡 Tip: Use closure(fn) + next_fn to create transformation pipelines.")
     print("📄 Documentation: https://github.com/kosmolebryce/closive")
 
 
@@ -86,7 +86,7 @@ def process_pipeline_configs(configs: Dict) -> Dict[str, Any]:
             # Create the pipeline
             pipeline = closure(steps[0])
             for step in steps[1:]:
-                pipeline = pipeline >> step
+                pipeline = pipeline + step
             
             result[name] = pipeline
         except Exception as e:

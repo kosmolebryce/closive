@@ -1,13 +1,15 @@
 [project]
 name = "closive"
-version = "0.0.0dev19"
+version = "0.0.0dev20"
 description = "Abstractions for callback-heavy control flows."
 readme = "README.md"
 authors = [
     { name = "kosmolebryce", email = "k.lebryce@pm.me" }
 ]
 requires-python = ">=3.11.0"
-dependencies = []
+dependencies = [
+    "returns>=0.25.0",
+]
 
 [build-system]
 requires = ["hatchling"]

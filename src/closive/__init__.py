@@ -6,10 +6,9 @@ a first-class solution for callback-heavy control flows.
 
 # Expose the public API
 from .closures import (
-    add, closure, cube, cuberoot, dataframe, divide,
-    exponentiate, linfunc, linvis, linplot,
-    multiply, plot, root, square, squareroot, subtract,
-    to_dataframe, to_plot
+    add, closure, cube, cuberoot, dataframe, divide, exponentiate, linfunc,
+    linvis, linplot, multiply, partial, plot, root, square, squareroot,
+    subtract, to_dataframe, to_plot
 )
 
 # Define aliases
@@ -71,6 +70,7 @@ __all__ = [
     "r",
     "reload_pipelines",
     "root",
+    "partial",
     "plot",
     "s",
     "sq",
