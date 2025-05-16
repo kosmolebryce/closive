@@ -662,12 +662,12 @@ class _Closure(Generic[A, B, E]):
                 continue_pipeline=False
             )
 
-    def __matmul__(self, other: '_Closure') -> '_Closure':
+    def __matmul__(self, other: "_Pipeline") -> "_Pipeline":
         """
         Support function composition with the @ operator.
         f @ g is equivalent to g(f(x))
         """
-        if not isinstance(other, _Closure):
+        if not isinstance(_Closure, other):
             raise TypeError(f"Expected _Closure, got {type(other).__name__}")
             
         result = copy(other)
