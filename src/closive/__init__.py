@@ -13,7 +13,7 @@ from .closures import (
 
 from .commutators import as_tuple, identity, ignore_return, log, noop, tap
 from .monads import Result, Success, Failure
-from .types import AwareTransformer, NaiveTransformer, Pipeline
+from .rtypes import AwareTransformer, NaiveTransformer, Pipeline
 
 # Define aliases
 c = closure

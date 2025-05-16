@@ -8,8 +8,8 @@ import sys
 
 from copy import copy
 from collections.abc import Callable
-from functools import partial, reduce, wraps
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, TypeVar, Generic, Union, cast
+from functools import partial, reduce, update_wrapper, wraps
+from typing import Any, GenericAlias, Callable, Dict, Generator, List, Optional, Tuple, TypeVar, Generic, Union
 from textwrap import shorten
 
 # Import returns.result instead of custom Result implementation
@@ -198,7 +198,7 @@ class _Pipeline(Generic[A, B, E]):
                 if used and not self._continue_after_fallback:
                     break
 
-        # ------------------ unwrap or raise ---------------------------------
+        # ─── Unwrap or raise ─────────────────────────────────────────────────
         if isinstance(result, Success):
             return result.unwrap()
         result, _ = self._apply_error_handling(result)
@@ -235,8 +235,7 @@ class _Pipeline(Generic[A, B, E]):
                     return Success(self._default_on_error), True
                 else:
                     return Failure(handler_error), False
-        
-        # Apply static fallback if no handler or handler failed
+
         elif self._default_on_error is not None:
             if self._preserve_error_context:
                 return Success((self._default_on_error, error)), True
@@ -777,8 +776,8 @@ def expects(fn):
     return fn
 
 def partial(fn, /, *fixed_args, **fixed_kwargs):
-    p = functools.partial(fn, *fixed_args, **fixed_kwargs)
-    functools.update_wrapper(p, fn)
+    p = partial(fn, *fixed_args, **fixed_kwargs)
+    update_wrapper(p, fn)
     if getattr(fn, '_expects_result', False):
         p._expects_result = True
     # make it tolerant toward extra *args, **kwargs
