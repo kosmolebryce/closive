@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "closive"
-version = "0.0.0.dev20"
+version = "0.0.0.dev21"
 source = { editable = "." }
 dependencies = [
     { name = "returns" },

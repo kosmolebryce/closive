@@ -11,6 +11,10 @@ from .closures import (
     subtract, to_dataframe, to_plot
 )
 
+from .commutators import as_tuple, identity, ignore_return, log, noop, tap
+from .monads import Result, Success, Failure
+from .types import AwareTransformer, NaiveTransformer, Pipeline
+
 # Define aliases
 c = closure
 
@@ -26,31 +30,43 @@ sq = square
 sqrt = squareroot
 r = root
 
-# Import and initialize the custom importer functionality
+# Import and initialize the custom importer functionality.
 try:
     from . import _importer
     
-    # Show welcome message
+    # Show the welcome message.
     _importer.display_welcome_message()
     
-    # Create default config if needed
+    # Create a default config file, if needed.
     _importer.create_default_config()
     
-    # Load pipelines from external configuration
+    # Load pipelines from external configuration.
     pipelines = _importer.load_external_pipelines()
     for name, pipeline in pipelines.items():
         globals()[name] = pipeline
     
-    # Add utility functions to the module namespace
+    # Add utility functions to the module namespace.
     reload_pipelines = _importer.reload_pipelines
     save_pipeline = _importer.save_pipeline
 except ImportError:
     pass  # If the custom importer is not available, proceed without it
 
-# Update __all__ to include all exported symbols
+
 __all__ = [
+    # Monads, re-exported from `returns.result`
+    "Result",
+    "Success",
+    "Failure",
+
+    # Closive: custom typedefs
+    "AwareTransformer",
+    "NaiveTransformer",
+    "Pipeline",
+
+    # Closive: functions/methods
     "a",
     "add",
+    "as_tuple",
     "c",
     "cb",
     "cbrt",
@@ -62,11 +78,15 @@ __all__ = [
     "divide",
     "e",
     "exponentiate",
+    "identity",
+    "ignore_return",
     "linfunc",
     "linplot",
     "linvis",
+    "log",
     "m",
     "multiply",
+    "noop",
     "r",
     "reload_pipelines",
     "root",
@@ -78,6 +98,7 @@ __all__ = [
     "square",
     "subtract",
     "save_pipeline",
+    "tap",
     "to_dataframe",
     "to_plot"
 ]

@@ -3,24 +3,14 @@
 Abstractions for callback-heavy control flows with explicit state management.
 Built on top of returns.result for robust Result monad implementation.
 """
+import html
+import sys
 
 from copy import copy
-from collections import deque
 from collections.abc import Callable
-from functools import wraps, reduce
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generator,
-    List,
-    Optional,
-    Tuple,
-    TypeVar,
-    Generic,
-    Union,
-    cast
-)
+from functools import partial, reduce, wraps
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, TypeVar, Generic, Union, cast
+from textwrap import shorten
 
 # Import returns.result instead of custom Result implementation
 from returns.result import Result, Success, Failure
@@ -37,25 +27,21 @@ E = TypeVar('E', bound=Exception)
 class PipelineState:
     """Container for managing state throughout a pipeline execution."""
     
-    def __init__(self, initial_value=None, *, size=None):
-        self.current = initial_value
-        # list  = unlimited;  deque = bounded;  None = disabled
-        if size is None:
-            self.history = []           # unlimited (old behaviour)
-        elif size == 0:
-            self.history = None         # no history
-        else:
-            self.history = deque(maxlen=size)
-
-
-    def update(self, value: Any, step_name: Optional[str] = None, **metadata) -> None:
+    def __init__(self, initial_value: Any = None):
+        """Initialize pipeline state with an optional initial value."""
+        self.current = initial_value  # Current value being passed through the pipeline
+        self.history = []  # History of all intermediate values
+        self.metadata = {}  # Optional metadata for each step
+        
+    def update(self, value: Any, step_name: str = None, **metadata) -> None:
         """Update the current value and record history."""
-        if self.history is not None:
-            self.history.append({
-                'value': self.current,
-                'step': step_name,
-                'metadata': {**metadata}
-            })
+        # Store the previous value in history with metadata
+        self.history.append({
+            'value': self.current,
+            'step': step_name,
+            'metadata': {**metadata}
+        })
+        # Update the current value
         self.current = value
         
     def get_history(self) -> List[Dict]:
@@ -70,28 +56,17 @@ class PipelineState:
 
 
 class _Closure(Generic[A, B, E]):
-    """
-    A callable decorator factory that supports chaining transformations
-    with explicit state management.
-    """
+    """A callable decorator factory that supports chaining transformations with explicit state management."""
 
-    def __init__(
-        self,
-        fn: Optional[Callable] = None,
-        debug: bool = False,
-        strict: bool = True
-    ) -> None:
+    def __init__(self, fn: Optional[Callable] = None, debug: bool = False):
         """
         Instantiates a new closure.
 
         Args:
           fn: 
-            The function whose return value will be passed as the first
-            argument to the next callback.
+            The function whose return value will be passed as the first argument to the next callback.
           debug:
             If True, prints each step of the transformation pipeline.
-          strict:
-            If True, raises all exceptions at each step in the pipeline.
         """
         if fn is not None and not callable(fn):
             raise TypeError("Expected a callable to initialize closure.")
@@ -104,9 +79,8 @@ class _Closure(Generic[A, B, E]):
             fn.__name__ = "identity"
         
         self._callbacks = [fn]
-        self._name = fn.__name__ if hasattr(fn, "__name__") else "unnamed"
         self._debug = debug
-        self._strict = strict
+        self._name = fn.__name__ if hasattr(fn, "__name__") else "unnamed"
         
         # Metadata for each callback
         self._callback_metadata = [{
@@ -121,72 +95,116 @@ class _Closure(Generic[A, B, E]):
         self._preserve_error_context = False
         self._handled_error_types = None
         self._propagate_other_errors = True
-   
+    
 
-    def __call__(self, target: Callable) -> Callable:
+    # ----------------------------------------------------------------------
+    # PUBLIC DISPATCHER
+    # ----------------------------------------------------------------------
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: # noqa: N802
+        """
+        Dual-mode call.
+
+        • Decorator mode  →  pipeline(fn) → wrapped_fn
+        • Execution mode  →  pipeline(value, *extra, **kw) → result
+        """
+        if self._decorator_call(args, kwargs):
+            # Decorator usage -----------------------------------------------
+            fn = args[0] # type: ignore[arg-type]
+            return self._decorate(fn)
+
+        # Execution usage ---------------------------------------------------
+        if not args:
+            raise TypeError(
+                "To execute a pipeline directly you must pass the initial "
+                "value as the first positional argument."
+            )
+        initial, *rest = args
+        return self._execute(initial, *rest, **kwargs)
+
+    # ----------------------------------------------------------------------
+    # HELPER TO TELL THE TWO MODES APART
+    # ----------------------------------------------------------------------
+    @staticmethod
+    def _decorator_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+        """
+        Heuristic: *exactly one* positional arg, *no* keyword args,
+        and that arg is callable  → decorator mode.
+        """
+        return len(args) == 1 and not kwargs and callable(args[0])
+
+    # ----------------------------------------------------------------------
+    # DECORATOR FACTORY
+    # ----------------------------------------------------------------------
+    def _decorate(self, target: Callable) -> Callable:
+        """
+        Wrap *target* so its return value becomes the initial value fed
+        into the pipeline.
+        """
         @wraps(target)
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
-            # 1) Run the initial function and wrap in Result
+        def wrapped(*w_args: Any, **w_kw: Any) -> Any:
             try:
-                initial = target(*args, **kwargs)
-                result = Success(initial)
-            except Exception as e:
-                result = Failure(e)
+                initial = target(*w_args, **w_kw)
+                return self._execute(initial, *w_args, **w_kw)
+            except Exception as exc:                       # target failed
+                return self._execute(Failure(exc), *w_args, **w_kw)
 
-            # 2) Process through the pipeline
-            for idx, (fn, meta) in enumerate(zip(self._callbacks, self._callback_metadata)):
-                if self._debug:
-                    print(f"Step {idx}: {meta['name']}")
-                
-                # Process the current step
-                try:
-                    # For functions that expect a Result, pass it directly
-                    if getattr(fn, '_expects_result', False):
-                        next_result = fn(result, *args, **kwargs)
-                    else:
-                        # For regular functions, unwrap the Success value
-                        if isinstance(result, Success):
-                            # Explicitly catch exceptions from the function
-                            try:
-                                next_value = fn(result.unwrap(), *args, **kwargs)
-                                next_result = Success(next_value)
-                            except Exception as e:
-                                next_result = Failure(e)
-                        else:  # It's a Failure
-                            next_result = result
-                except Exception as e:
-                    next_result = Failure(e)
-                
-                # Apply error handling if needed
-                if isinstance(next_result, Failure):
-                    handled_result, applied_fallback = self._apply_error_handling(next_result)
-                    if applied_fallback:
-                        if self._continue_after_fallback:
-                            # Continue with the fallback value
-                            result = handled_result
-                        else:
-                            # Stop processing and return the fallback
-                            return handled_result.unwrap()
-                    else:
-                        # No fallback applied, use the error result
-                        result = next_result
-                else:
-                    # No error, use the successful result
-                    result = next_result
-            
-            # 3) Final unwrap
-            if isinstance(result, Success):
-                return result.unwrap()
-            else:
-                # Apply final fallback if available
-                result, applied_fallback = self._apply_error_handling(result)
-                if applied_fallback:
-                    return result.unwrap()
-                else:
-                    raise result.failure()
-
-        wrapped._closure = self
+        wrapped._pipeline = self      # keep back-ref (API compatibility)
         return wrapped
+
+    # ----------------------------------------------------------------------
+    # CORE EXECUTION ENGINE
+    # ----------------------------------------------------------------------
+    def _execute(self, initial_value: Any, *args: Any, **kwargs: Any) -> Any:
+        """
+        Run the callback chain starting from *initial_value* and propagate
+        through Result semantics plus error handlers.
+        """
+        result: Result = (
+            initial_value
+            if isinstance(initial_value, (Success, Failure))
+            else Success(initial_value)
+        )
+
+        for idx, (fn, meta) in enumerate(
+            zip(self._callbacks, self._callback_metadata)
+        ):
+            if self._debug:
+                print(f"Step {idx:02d}: {meta['name']}")
+
+            try:
+                if getattr(fn, "_expects_result", False):
+                    result = fn(result, *args, **kwargs)
+                else:
+                    if isinstance(result, Success):
+                        try:
+                            next_val = fn(result.unwrap(), *args, **kwargs)
+                            result = (
+                                next_val
+                                if isinstance(next_val, (Success, Failure))
+                                else Success(next_val)
+                            )
+                        except Exception as exc:
+                            result = Failure(exc)
+                            result, used = self._apply_error_handling(result)
+                            if used and not self._continue_after_fallback:
+                                break
+                    else:                                       # already Failure
+                        result, used = self._apply_error_handling(result)
+                        if used and not self._continue_after_fallback or not used:
+                            break
+            except Exception as exc:                            # pipeline bug
+                result = Failure(exc)
+                result, used = self._apply_error_handling(result)
+                if used and not self._continue_after_fallback:
+                    break
+
+        # ------------------ unwrap or raise ---------------------------------
+        if isinstance(result, Success):
+            return result.unwrap()
+        result, _ = self._apply_error_handling(result)
+        if isinstance(result, Success):
+            return result.unwrap()
+        raise result.failure()
 
     
     def _apply_error_handling(self, result: Result) -> Tuple[Result, bool]:
@@ -227,12 +245,19 @@ class _Closure(Generic[A, B, E]):
         
         return result, False
 
+    def _clone(self: "_Closure") -> "_Closure":
+        """Return a safe, independent copy of this pipeline."""
+        new = copy(self) # shallow-copy the object
+        new._callbacks = list(self._callbacks)
+        new._callback_metadata = list(self._callback_metadata)
+        return new
+
     def pipe(self, fn: Callable, name: str = None, description: str = None) -> "_Closure":
         """Add a callback to the pipeline with optional metadata."""
         if not callable(fn):
             raise TypeError(f"pipe expects a callable, got {type(fn).__name__}")
             
-        new = copy(self)
+        new = self._clone()
         new._callbacks.append(fn)
         
         # Add metadata for the callback
@@ -248,7 +273,7 @@ class _Closure(Generic[A, B, E]):
         if not self._callbacks:
             raise ValueError("Cannot drain callback from empty pipeline.")
         
-        new = copy(self)
+        new = self._clone()
         new._callbacks.pop()
         new._callback_metadata.pop()
         return new
@@ -260,7 +285,7 @@ class _Closure(Generic[A, B, E]):
         if x < 1:
             raise ValueError(f"Repeat count must be at least 1, got {x}")
         
-        new = copy(self)
+        new = self._clone()
         callback = new._callbacks[-1]
         metadata = new._callback_metadata[-1]
         
@@ -274,13 +299,12 @@ class _Closure(Generic[A, B, E]):
             
         return new
 
-
-    def __add__(self, other: Union['_Closure', Callable]) -> '_Closure':
+    def __and__(self, other: Union['_Closure', Callable]) -> '_Closure':
         """
-        Enables chaining using the + operator.
-        Higher precedence than | for better composition.
+        Enables chaining using the & operator.
+        Handles both _Closure instances and callables.
         """
-        new = copy(self)
+        new = self._clone()
         
         if isinstance(other, _Closure):
             # Combine two closure pipelines
@@ -294,10 +318,9 @@ class _Closure(Generic[A, B, E]):
                 'description': other.__doc__ or "No description"
             })
         else:
-            raise TypeError(f"Cannot chain with + - expected a callable or _Closure, got {type(other).__name__}")
-                
+            raise TypeError(f"Cannot chain with & - expected a callable or _Closure, got {type(other).__name__}")
+            
         return new
-
 
     def handle_error(self, fallback=None, handler=None, continue_pipeline=False, 
                  preserve_context=False, for_errors=None, propagate_others=True) -> "_Closure":
@@ -319,7 +342,7 @@ class _Closure(Generic[A, B, E]):
         Returns:
             A new _Closure with error handling configured
         """
-        new = copy(self)
+        new = self._clone()
         
         # Store error handling configuration
         if fallback is not None:
@@ -432,6 +455,107 @@ class _Closure(Generic[A, B, E]):
                 }
                 break
 
+
+    def explain(self, input_value: Any, *args, show_values: bool = True,
+                max_len: int = 80, **kwargs) -> str:
+        """
+        Run the pipeline on *input_value* and return a human-readable
+        step-by-step report.  In a Jupyter environment the same string is
+        also rendered as rich HTML.
+
+        Parameters
+        ----------
+        input_value : Any
+            Initial value fed into the pipeline.
+        show_values : bool, default True
+            Include the intermediate values in the report.
+        max_len : int, default 80
+            `repr()` strings are truncated to this many characters.
+
+        Returns
+        -------
+        str
+            Plain-text explanation (also used as fallback repr).
+        """
+        # Gather trace data
+        events = list(self.trace(input_value, *args, **kwargs))
+        if not events:       # empty pipeline
+            return "〈empty pipeline〉"
+
+        # Build plain-text lines
+        lines   : list[str] = []
+        h_rows  : list[str] = []          # HTML rows
+        symbols = {True: "✓", False: "✗"}
+        colours = {True: "\033[32m", False: "\033[31m"}  # green / red
+
+        for ev in events:
+            ok   = ev["success"]
+            idx  = ev["index"]
+            name = ev["step"]
+
+            prefix = f"{idx:02d} {symbols[ok]} "
+            colour = colours[ok]
+            reset  = "\033[0m"
+
+            if ok:
+                val = ev["value"]
+                val_repr = shorten(repr(val), max_len) if show_values else ""
+                txt = f"{prefix}{name}"
+                if show_values:
+                    txt += f" → {val_repr}"
+                lines.append(f"{colour}{txt}{reset}")
+
+                # HTML
+                val_html = html.escape(shorten(repr(val), max_len))
+                h_rows.append(
+                    f"<tr class='ok'><td>{idx}</td><td>{html.escape(name)}</td>"
+                    + (f"<td class='val'>{val_html}</td>" if show_values else "")
+                    + "</tr>"
+                )
+            else:
+                err = ev["error"]
+                err_repr = shorten(f"{type(err).__name__}: {err}", max_len)
+                lines.append(f"{colour}{prefix}{name} → {err_repr}{reset}")
+
+                h_rows.append(
+                    f"<tr class='fail'><td>{idx}</td><td>{html.escape(name)}</td>"
+                    f"<td class='err'>{html.escape(err_repr)}</td></tr>"
+                )
+                break  # pipeline stops on first failure
+
+        report = "\n".join(lines)
+
+        # Jupyter rich repr
+        if "IPython" in sys.modules:
+            from html import escape
+            style = """
+            <style>
+            .closive-table      {font-family: monospace;border-collapse:collapse}
+            .closive-table td   {padding:4px 8px;border:1px solid #ccc}
+            .closive-table .ok  {background:#eaffea}
+            .closive-table .fail{background:#ffecec}
+            .closive-table .val {color:#006}
+            .closive-table .err {color:#a00}
+            </style>
+            """
+            html_table = (
+                style +
+                "<table class='closive-table'>"
+                "<tr><th>#</th><th>step</th>"
+                + ("<th>value</th>" if show_values else "")
+                + "</tr>"
+                + "".join(h_rows) +
+                "</table>"
+            )
+
+            # Attach the rich repr to the string we are about to return
+            class _Rich(str):
+                def _repr_html_(self_non) -> str:  # noqa: E501
+                    return html_table
+            report = _Rich(report)
+
+        return report
+
     def visualize(self) -> str:
         """Generate a text representation of the pipeline."""
         if not self._callbacks:
@@ -513,13 +637,30 @@ class _Closure(Generic[A, B, E]):
             yield idx, callback, metadata
 
 
-    def __or__(self, default_value):
+    def __lshift__(self, fallback_or_callable):
         """
-        Set a fallback value to use when an error occurs in the pipeline.
-        Pipeline should short-circuit (stop processing) after applying the fallback.
-        """
-        return self.handle_error(fallback=default_value, continue_pipeline=False)
+        Short-circuit fallback operator.
 
+        • If *fallback_or_callable* is NOT callable → treat it as a static
+          replacement value (current behaviour).
+
+        • If it IS callable  → treat it as a *handler*; it will be invoked
+          as  handler(exc)  when the first Failure is encountered and its
+          return value will be used as the replacement.  The pipeline still
+          stops right after the replacement (same as before).
+        """
+        if callable(fallback_or_callable):
+            # delegate to .handle_error as a *handler*
+            return self.handle_error(
+                handler=fallback_or_callable,
+                continue_pipeline=False        # short-circuit
+            )
+        else:
+            # keep old static-value path
+            return self.handle_error(
+                fallback=fallback_or_callable,
+                continue_pipeline=False
+            )
 
     def __matmul__(self, other: '_Closure') -> '_Closure':
         """
@@ -627,28 +768,21 @@ class _Closure(Generic[A, B, E]):
 
 
 # Utility functions to create Result-aware functions
-def expects(factory: Callable) -> Callable:
+def expects(fn):
     """
-    Decorating a *factory* with @expects guarantees that the callable it
-    returns is also marked as expecting a Result.
+    Decorator to mark a function as expecting a Result object directly.
+    This allows creating functions that work directly with the Result monad.
     """
-    @wraps(factory)
-    def wrapper(*a, **k):
-        fn = factory(*a, **k)
-        fn._expects_result = True        # mark the *returned* callable
-        return fn
-    wrapper._expects_result = True       # factory can still be used itself
-    return wrapper
+    fn._expects_result = True
+    return fn
 
-
-def partial(fn, /, *fixed_a, **fixed_k):
-    """functools.partial that keeps  __name__, __doc__
-       and propagates _expects_result when present."""
-    new = functools.partial(fn, *fixed_a, **fixed_k)
-    functools.update_wrapper(new, fn)
+def partial(fn, /, *fixed_args, **fixed_kwargs):
+    p = functools.partial(fn, *fixed_args, **fixed_kwargs)
+    functools.update_wrapper(p, fn)
     if getattr(fn, '_expects_result', False):
-        new._expects_result = True
-    return new
+        p._expects_result = True
+    # make it tolerant toward extra *args, **kwargs
+    return lambda x, *a, **k: p(x)
 
 
 # Main public API
@@ -875,7 +1009,7 @@ def to_plot(result: Result, *args, **kwargs):
     except Exception as e:
         return Failure(e)
 
-# Standalone functions to be used with the + operator
+# Standalone functions to be used with the & operator
 def dataframe(r, *args, **kwargs):
     """Standalone function to convert pipeline results to a DataFrame."""
     # Handle Result type input
@@ -918,7 +1052,7 @@ _Closure.to_dataframe = _closure_to_dataframe
 _Closure.to_plot = _closure_to_plot
 
 # Pre-composed pipeline
-linplot = closure(linfunc) + linvis
+linplot = closure(linfunc) & linvis
 
 
 if __name__ == "__main__":
