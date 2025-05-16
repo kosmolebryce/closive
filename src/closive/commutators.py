@@ -102,7 +102,7 @@ def as_tuple(x: T, *a: Any, **k: Any) -> Tuple[T, T]:
     return x, x
 
 
-def ignore_return(x: T, *a: Any, **k: Any) -> T:           # alias for clarity
+def ignore_return(x: T, *a: Any, **k: Any) -> T:
     """
     Equivalent to ``identity`` – provided only for semantic variety when the
     function’s *name* should express “I do not care about the value”.

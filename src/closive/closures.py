@@ -55,7 +55,7 @@ class PipelineState:
         return [step['value'] for step in self.history[-n:]]
 
 
-class _Closure(Generic[A, B, E]):
+class _Pipeline(Generic[A, B, E]):
     """A callable decorator factory that supports chaining transformations with explicit state management."""
 
     def __init__(self, fn: Optional[Callable] = None, debug: bool = False):
@@ -245,14 +245,14 @@ class _Closure(Generic[A, B, E]):
         
         return result, False
 
-    def _clone(self: "_Closure") -> "_Closure":
+    def _clone(self: "_Pipeline") -> "_Pipeline":
         """Return a safe, independent copy of this pipeline."""
         new = copy(self) # shallow-copy the object
         new._callbacks = list(self._callbacks)
         new._callback_metadata = list(self._callback_metadata)
         return new
 
-    def pipe(self, fn: Callable, name: str = None, description: str = None) -> "_Closure":
+    def pipe(self, fn: Callable, name: str = None, description: str = None) -> "_Pipeline":
         """Add a callback to the pipeline with optional metadata."""
         if not callable(fn):
             raise TypeError(f"pipe expects a callable, got {type(fn).__name__}")
@@ -268,7 +268,7 @@ class _Closure(Generic[A, B, E]):
         
         return new
 
-    def drain(self) -> "_Closure":
+    def drain(self) -> "_Pipeline":
         """Remove a callback from the end of the pipeline."""
         if not self._callbacks:
             raise ValueError("Cannot drain callback from empty pipeline.")
@@ -278,7 +278,7 @@ class _Closure(Generic[A, B, E]):
         new._callback_metadata.pop()
         return new
 
-    def repeat(self, x: int) -> "_Closure":
+    def repeat(self, x: int) -> "_Pipeline":
         """Repeats the last callback x additional times."""
         if not self._callbacks:
             raise ValueError("No callback to repeat in empty pipeline.")
@@ -299,14 +299,14 @@ class _Closure(Generic[A, B, E]):
             
         return new
 
-    def __and__(self, other: Union['_Closure', Callable]) -> '_Closure':
+    def __rshift__(self, other: Union['_Pipeline', Callable]) -> '_Pipeline':
         """
-        Enables chaining using the & operator.
-        Handles both _Closure instances and callables.
+        Enables chaining using the >> operator.
+        Handles both _Pipeline instances and callables.
         """
         new = self._clone()
         
-        if isinstance(other, _Closure):
+        if isinstance(other, _Pipeline):
             # Combine two closure pipelines
             new._callbacks.extend(other._callbacks)
             new._callback_metadata.extend(other._callback_metadata)
@@ -318,12 +318,12 @@ class _Closure(Generic[A, B, E]):
                 'description': other.__doc__ or "No description"
             })
         else:
-            raise TypeError(f"Cannot chain with & - expected a callable or _Closure, got {type(other).__name__}")
+            raise TypeError(f"Cannot chain with >> - expected a callable or _Pipeline, got {type(other).__name__}")
             
         return new
 
     def handle_error(self, fallback=None, handler=None, continue_pipeline=False, 
-                 preserve_context=False, for_errors=None, propagate_others=True) -> "_Closure":
+                 preserve_context=False, for_errors=None, propagate_others=True) -> "_Pipeline":
         """
         Unified error handling method that consolidates multiple approaches.
         
@@ -340,7 +340,7 @@ class _Closure(Generic[A, B, E]):
                             for_errors will be propagated (re-raised).
         
         Returns:
-            A new _Closure with error handling configured
+            A new _Pipeline with error handling configured
         """
         new = self._clone()
         
@@ -369,7 +369,7 @@ class _Closure(Generic[A, B, E]):
         return new
 
     def map(self, fn: Callable[[Any], Any], *,
-            name: str = None, description: str = None) -> "_Closure":
+            name: str = None, description: str = None) -> "_Pipeline":
         """
         Apply `fn` to each element of the current value (which must be iterable).
         """
@@ -383,7 +383,7 @@ class _Closure(Generic[A, B, E]):
         return self.pipe(mapper)
 
     def filter(self, predicate: Callable[[Any], bool], *,
-               name: str = None, description: str = None) -> "_Closure":
+               name: str = None, description: str = None) -> "_Pipeline":
         """
         Keep only those elements `x` for which `predicate(x)` is truthy.
         """
@@ -397,7 +397,7 @@ class _Closure(Generic[A, B, E]):
         return self.pipe(fil)
 
     def fold(self, fn: Callable[[Any, Any], Any], initial: Any, *,
-             name: str = None, description: str = None) -> "_Closure":
+             name: str = None, description: str = None) -> "_Pipeline":
         """
         Reduce the current iterable by applying `fn(acc, x)` across all elements, 
         starting from `initial`.
@@ -637,7 +637,7 @@ class _Closure(Generic[A, B, E]):
             yield idx, callback, metadata
 
 
-    def __lshift__(self, fallback_or_callable):
+    def __or__(self, fallback_or_callable):
         """
         Short-circuit fallback operator.
 
@@ -667,8 +667,8 @@ class _Closure(Generic[A, B, E]):
         Support function composition with the @ operator.
         f @ g is equivalent to g(f(x))
         """
-        if not isinstance(_Closure, other):
-            raise TypeError(f"Expected _Closure, got {type(other).__name__}")
+        if not isinstance(_Pipeline, other):
+            raise TypeError(f"Expected _Pipeline, got {type(other).__name__}")
             
         result = copy(other)
         for cb, meta in zip(self._callbacks, self._callback_metadata):
@@ -678,7 +678,7 @@ class _Closure(Generic[A, B, E]):
         return result
 
     # Mathematical operations
-    def add(self, n: Union[int, float]) -> "_Closure":
+    def add(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that adds n to its input value."""
         def inner(r, *args, **kwargs):
             return r + n
@@ -686,7 +686,7 @@ class _Closure(Generic[A, B, E]):
         inner.__doc__ = f"Add {n} to the input value"
         return self.pipe(inner)
 
-    def subtract(self, n: Union[int, float]) -> "_Closure":
+    def subtract(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that subtracts n from its input value."""
         def inner(r, *args, **kwargs):
             return r - n
@@ -694,7 +694,7 @@ class _Closure(Generic[A, B, E]):
         inner.__doc__ = f"Subtract {n} from the input value"
         return self.pipe(inner)
 
-    def multiply(self, n: Union[int, float]) -> "_Closure":
+    def multiply(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that multiplies its input value by n."""
         def inner(r, *args, **kwargs):
             return r * n
@@ -702,7 +702,7 @@ class _Closure(Generic[A, B, E]):
         inner.__doc__ = f"Multiply the input value by {n}"
         return self.pipe(inner)
 
-    def divide(self, n: Union[int, float]) -> "_Closure":
+    def divide(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that divides its input value by n."""
         if n == 0:
             raise ValueError("Cannot divide by zero")
@@ -712,7 +712,7 @@ class _Closure(Generic[A, B, E]):
         inner.__doc__ = f"Divide the input value by {n}"
         return self.pipe(inner)
 
-    def exponentiate(self, n: Union[int, float]) -> "_Closure":
+    def exponentiate(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that raises its input value to the power of n."""
         def inner(r, *args, **kwargs):
             return r ** n
@@ -720,7 +720,7 @@ class _Closure(Generic[A, B, E]):
         inner.__doc__ = f"Raise the input value to the power of {n}"
         return self.pipe(inner)
 
-    def square(self) -> "_Closure":
+    def square(self) -> "_Pipeline":
         """Add a function that squares the input value."""
         def square_fn(r, *args, **kwargs):
             return r ** 2
@@ -728,7 +728,7 @@ class _Closure(Generic[A, B, E]):
         square_fn.__doc__ = "Square the input value"
         return self.pipe(square_fn)
 
-    def cube(self) -> "_Closure":
+    def cube(self) -> "_Pipeline":
         """Add a function that cubes the input value."""
         def cube_fn(r, *args, **kwargs):
             return r ** 3
@@ -736,7 +736,7 @@ class _Closure(Generic[A, B, E]):
         cube_fn.__doc__ = "Cube the input value"
         return self.pipe(cube_fn)
 
-    def squareroot(self) -> "_Closure":
+    def squareroot(self) -> "_Pipeline":
         """Add a function that returns the square root of the input value."""
         def sqrt_fn(r, *args, **kwargs):
             if r < 0:
@@ -746,7 +746,7 @@ class _Closure(Generic[A, B, E]):
         sqrt_fn.__doc__ = "Calculate the square root of the input value"
         return self.pipe(sqrt_fn)
     
-    def cuberoot(self) -> "_Closure":
+    def cuberoot(self) -> "_Pipeline":
         """Add a function that returns the cube root of the input value."""
         def cbrt_fn(r, *args, **kwargs):
             return r ** (1/3)
@@ -754,7 +754,7 @@ class _Closure(Generic[A, B, E]):
         cbrt_fn.__doc__ = "Calculate the cube root of the input value"
         return self.pipe(cbrt_fn)
 
-    def root(self, n: Union[int, float]) -> "_Closure":
+    def root(self, n: Union[int, float]) -> "_Pipeline":
         """Add a function that returns the nth root of its input value."""
         if n == 0:
             raise ValueError("Cannot compute 0th root")
@@ -786,7 +786,7 @@ def partial(fn, /, *fixed_args, **fixed_kwargs):
 
 
 # Main public API
-def closure(fn: Optional[Callable] = None, debug: bool = False) -> _Closure:
+def closure(fn: Optional[Callable] = None, debug: bool = False) -> _Pipeline:
     """
     Create a closure pipeline.
     
@@ -797,9 +797,9 @@ def closure(fn: Optional[Callable] = None, debug: bool = False) -> _Closure:
         Optional flag to enable debug prints.
 
     Returns:
-      A _Closure instance wrapping the initial function.
+      A _Pipeline instance wrapping the initial function.
     """
-    return _Closure(fn, debug=debug)
+    return _Pipeline(fn, debug=debug)
 
 
 # Standalone transformation functions for Result monad
@@ -1009,7 +1009,7 @@ def to_plot(result: Result, *args, **kwargs):
     except Exception as e:
         return Failure(e)
 
-# Standalone functions to be used with the & operator
+# Standalone functions to be used with the >> operator
 def dataframe(r, *args, **kwargs):
     """Standalone function to convert pipeline results to a DataFrame."""
     # Handle Result type input
@@ -1036,7 +1036,7 @@ def _closure_linvis(self):
     """Add a visualization operation to the pipeline."""
     return self.pipe(linvis)
 
-# Add dataframe and plot methods to _Closure
+# Add dataframe and plot methods to _Pipeline
 def _closure_to_dataframe(self):
     """Add a DataFrame creation operation to the pipeline."""
     return self.pipe(to_dataframe)
@@ -1045,14 +1045,14 @@ def _closure_to_plot(self):
     """Add a Seaborn Plot creation operation to the pipeline."""
     return self.pipe(to_plot)
 
-# Add the methods to the _Closure class
-_Closure.linfunc = _closure_linfunc
-_Closure.linvis = _closure_linvis
-_Closure.to_dataframe = _closure_to_dataframe
-_Closure.to_plot = _closure_to_plot
+# Add the methods to the _Pipeline class
+_Pipeline.linfunc = _closure_linfunc
+_Pipeline.linvis = _closure_linvis
+_Pipeline.to_dataframe = _closure_to_dataframe
+_Pipeline.to_plot = _closure_to_plot
 
 # Pre-composed pipeline
-linplot = closure(linfunc) & linvis
+linplot = closure(linfunc) >> linvis
 
 
 if __name__ == "__main__":
